@@ -4,7 +4,7 @@ A full-stack ML application that predicts FIFA World Cup match outcomes using hi
 
 **[Live Demo](https://wc-predictor.onrender.com)**
 
-<!-- ![Prometheus UI](docs/screenshot.png) -->
+![Prometheus UI](docs/screenshot.png)
 
 ---
 
@@ -209,15 +209,6 @@ python -m wc_predictor.predict --team_a Brazil --team_b Germany --date 2026-06-1
 | **Baseline log loss is intentionally high** | `DummyClassifier` outputs [1,0,0] for every sample. `log(0)` after clipping to 1e-15 produces ~18. This is the correct worst-case reference, not a bug. |
 | **Same-origin deployment** | Serving React from FastAPI eliminates CORS complexity, avoids split-deployment issues, and provides a single URL. |
 | **Graceful XGBoost fallback** | The pipeline works without XGBoost installed (it's optional). This improves portability across environments. |
-
-## Security
-
-- **No API keys or secrets** -- the dataset is public domain
-- **No user data collected** -- stateless API, no cookies or sessions
-- **Rate limiting** -- 30 requests/minute per IP on `/api/predict`
-- **Global exception handler** -- stack traces are logged server-side, never exposed to clients
-- **Same-origin CORS** -- no cross-origin surface area in production
-- **Secret scanning** -- `make scan-secrets` checks for accidentally committed credentials
 
 ## Limitations
 
