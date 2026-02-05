@@ -1,62 +1,74 @@
-# World Cup Match Outcome Predictor
+# Prometheus - World Cup Match Outcome Predictor
 
-A production-quality ML pipeline that predicts FIFA World Cup match outcomes (Home Win / Draw / Away Win) using historical international football data, sequential ELO ratings, and rolling team form features.
+A full-stack ML application that predicts FIFA World Cup match outcomes using historical data, ELO ratings, and ensemble models. Features a production-grade Python pipeline with leak-free feature engineering, a FastAPI REST API, and a React frontend -- deployed on Render.
 
-## Problem Statement
+**[Live Demo](https://wc-predictor.onrender.com)**
 
-Given two national teams and a match date, predict the probability of each outcome: home win, draw, or away win. The pipeline emphasises correct ML practice: no data leakage, time-aware evaluation splits, proper baselines, and honest calibration assessment.
+<!-- ![Prometheus UI](docs/screenshot.png) -->
 
-## Data
+---
 
-**Source:** [International football results from 1872 to present](https://github.com/martj42/international_results) by Mart Jurisoo (public domain / open data).
+## Highlights
 
-| Column | Description |
+- **64.4% accuracy** on 2,730 held-out matches (2015--present) using temporal train/test splits
+- **Leak-free feature engineering** -- every feature for match *i* uses only data from matches with `date < date_i`
+- **4 models compared** with proper baselines, log loss, Brier score, and calibration analysis
+- **Full-stack web app** -- React frontend with cyberpunk UI, FastAPI backend, Docker deployment
+- **64 unit tests** covering ELO correctness, leakage prevention, probability consistency, and metric computation
+- **Production hardened** -- rate limiting, global exception handling, secret scanning, same-origin CORS
+
+## Tech Stack
+
+| Layer | Technology |
 |---|---|
-| `date` | Match date |
-| `home_team` / `away_team` | Team names |
-| `home_score` / `away_score` | Final score |
-| `tournament` | Competition name |
-| `neutral` | Whether the venue is neutral |
+| **ML Pipeline** | Python, scikit-learn, XGBoost, pandas, NumPy |
+| **Backend** | FastAPI, Pydantic, Uvicorn |
+| **Frontend** | React 18, Vite, vanilla CSS |
+| **Deployment** | Docker (multi-stage), Render |
+| **Testing** | pytest (64 tests) |
+| **Data** | 49,000+ international matches (1872--present) |
 
-By default the pipeline includes both World Cup finals and qualification matches (`--include-qualifiers`), giving ~9,700 target rows. ELO is computed over **all** ~49,000 international matches so that ratings reflect true team strength entering a tournament.
+## Architecture
 
-## Approach
+```
+Browser (React SPA)
+    |
+    |  /api/predict, /api/teams, /api/models, /api/comparison, /api/version
+    v
+FastAPI  ──>  Precomputed ELO Cache  ──>  sklearn Pipeline  ──>  JSON Response
+    |              (startup)                (inference)         w/ explainability
+    |
+    v
+Static File Server (serves built React app from same origin)
+```
 
-### Feature Engineering (No Leakage)
+### ML Pipeline
 
-Every feature for match *i* is computed using **only** matches with `date < date_i`:
-
-1. **ELO ratings** — Sequential ELO computed over all international matches (K=32, home advantage=100). Features: `home_elo`, `away_elo`, `elo_diff`, plus ELO-derived win probabilities.
-
-2. **Rolling form** (last 3, 5, 10 matches per team) — Win rate, draw rate, goals for/against averages, goal difference.
-
-3. **Head-to-head** — Home team's win rate in the last 5 meetings.
-
-4. **Neutral venue** — Binary indicator (most World Cup matches are at neutral venues).
-
-5. **Confederation** — Integer-encoded FIFA confederation for each team (UEFA, CONMEBOL, CONCACAF, CAF, AFC, OFC) plus a same-confederation binary flag.
-
-### Models
-
-| Model | Description |
-|---|---|
-| **Baseline** | Always predicts the most frequent class |
-| **Logistic Regression** | Multinomial, L2-regularised, with standard scaling |
-| **Random Forest** | 300 trees, max depth 8 |
-| **XGBoost** | Optional (graceful fallback if not installed) |
-
-All models use a sklearn `Pipeline` with median imputation for missing features.
-
-### Evaluation
-
-- **Temporal split**: train on matches up to 2014, test on 2015+ (configurable via `--cutoff`)
-- **Metrics**: accuracy, macro F1, log loss, multi-class Brier score
-- **Baselines**: most-frequent-class and ELO-only probability baseline
-- **Calibration**: reliability diagrams saved under `artifacts/figures/`
+```
+Raw Data (49k matches)
+    |
+    v
+ELO Rating System (K=32, home advantage=100, neutral venue handling)
+    |
+    v
+Leak-Free Feature Engineering (41 features)
+  - ELO ratings + ELO-derived win probabilities
+  - Rolling form (last 3/5/10 matches): win rate, goals for/against
+  - Head-to-head record (last 5 meetings)
+  - Confederation encoding (UEFA, CONMEBOL, etc.)
+  - Neutral venue flag
+    |
+    v
+Temporal Split (train <= 2014, test > 2014)
+    |
+    v
+Model Training (Pipeline: Imputer -> Scaler -> Classifier)
+    |
+    v
+Evaluation (accuracy, macro F1, log loss, Brier score, calibration plots)
+```
 
 ## Results
-
-Results with qualifiers included and confederation features (train up to 2014, test on 2015+):
 
 | Model | Accuracy | Macro F1 | Log Loss | Brier Score |
 |---|---|---|---|---|
@@ -65,130 +77,163 @@ Results with qualifiers included and confederation features (train up to 2014, t
 | **Random Forest** | **0.644** | 0.481 | **0.805** | **0.468** |
 | XGBoost | 0.626 | **0.519** | 0.881 | 0.500 |
 
-Train: 6,989 matches (up to 2014). Test: 2,730 matches (2015+).
+*Train: 6,989 matches (up to 2014). Test: 2,730 matches (2015+). Cutoff is configurable via `--cutoff`.*
 
-The cutoff is configurable: `python -m wc_predictor.train --model rf --cutoff 2010` trains on pre-2010 data and tests on 3,598 matches (accuracy: 0.640, similar generalization).
+> The baseline's log loss (~18) is intentionally extreme: `DummyClassifier` outputs 100% for one class, producing near-infinite log loss on misclassified samples. This is the correct worst-case reference point.
 
-### Figures
+## API
 
-After running the pipeline, comparison and calibration plots are saved to:
-- `artifacts/figures/model_comparison.png`
-- `artifacts/figures/calibration.png`
+### Endpoints
 
-## How to Run
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check (teams/models loaded) |
+| `GET` | `/api/teams` | List all teams in the dataset |
+| `GET` | `/api/models` | Available models with metrics |
+| `POST` | `/api/predict` | Predict match outcome (rate limited: 30/min) |
+| `GET` | `/api/comparison` | Model comparison table with metadata |
+| `GET` | `/api/version` | Build info, dataset hash, git commit |
+
+### Example Request
+
+```bash
+curl -X POST https://wc-predictor.onrender.com/api/predict \
+  -H "Content-Type: application/json" \
+  -d '{"home_team": "Brazil", "away_team": "Germany", "match_date": "2026-06-15", "neutral": true}'
+```
+
+### Example Response
+
+```json
+{
+  "home_team": "Brazil",
+  "away_team": "Germany",
+  "probabilities": { "H": 0.4521, "D": 0.2473, "A": 0.3006 },
+  "prediction": "H",
+  "prediction_label": "Home Win",
+  "confidence": { "max_prob": 0.4521, "entropy": 1.0412, "label": "MED" },
+  "explanation": {
+    "elo": { "home_elo": 1843.2, "away_elo": 1829.7, "elo_diff": 13.5 },
+    "home_form_last5": { "W": 3, "D": 1, "L": 1 },
+    "head_to_head": { "home_wins": 2, "draws": 1, "away_wins": 2 }
+  }
+}
+```
+
+## Frontend Features
+
+- **Searchable team dropdowns** with country flags (261 teams mapped via flagcdn.com CDN)
+- **Probability bar visualization** with color-coded outcome bars
+- **Confidence scoring** -- HIGH / MED / LOW badge based on Shannon entropy and max probability
+- **"Why this prediction?"** expandable explainability card showing ELO, form (W/D/L), head-to-head, and confederation context
+- **Model comparison table** with sortable columns and baseline reference tags
+- **Swap button** to quickly reverse home/away teams
+- **Responsive dark theme** (cyberpunk/HTB-inspired)
+
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- pip
+- Node.js 18+ (for frontend development)
 
-### Setup
+### Run Locally
 
 ```bash
-# Install the package and dependencies
+# Install everything
 make setup
 
-# Or manually:
-pip install -e ".[dev]"
-```
+# Run the full ML pipeline
+make download        # Fetch match data
+make features        # Engineer features (with qualifiers)
+make train           # Train all 4 models
+make evaluate        # Generate comparison reports
 
-### Full Pipeline
+# Start the web app (two terminals)
+make api             # Terminal 1: FastAPI on :8000
+make frontend        # Terminal 2: React dev server on :5173
 
-```bash
-# 1. Download and cache the dataset
-python -m wc_predictor.download_data
-
-# 2. Build features (downloads data + processes + engineers features)
-python -m wc_predictor.features --include-qualifiers
-# (omit --include-qualifiers to use only World Cup finals matches)
-
-# 3. Train all models
-make train
-# Or train individually (with optional cutoff year):
-python -m wc_predictor.train --model baseline
-python -m wc_predictor.train --model logreg
-python -m wc_predictor.train --model rf
-python -m wc_predictor.train --model xgb
-python -m wc_predictor.train --model rf --cutoff 2010  # experiment with different splits
-
-# 4. Evaluate and generate comparison plots
-python -m wc_predictor.evaluate
-# or: make evaluate
-
-# 5. Predict a single match
-python -m wc_predictor.predict --team_a Brazil --team_b Germany --date 2026-06-15
+# Open http://localhost:5173
 ```
 
 ### Run Tests
 
 ```bash
 make test
-# or: python -m pytest tests/ -v
+# 64 tests: ELO correctness, leakage prevention, probability consistency, metrics
+```
+
+### Run a Single Prediction (CLI)
+
+```bash
+python -m wc_predictor.predict --team_a Brazil --team_b Germany --date 2026-06-15
 ```
 
 ## Project Structure
 
 ```
 .
-├── pyproject.toml          # Package metadata and dependencies
-├── Makefile                # Convenience targets
-├── README.md
-├── LICENSE                 # MIT
-├── src/
-│   └── wc_predictor/
-│       ├── __init__.py
-│       ├── __main__.py     # CLI dispatcher
-│       ├── config.py       # Paths, constants, seeding
-│       ├── download_data.py# Dataset downloader + validator
-│       ├── build_dataset.py# Filter to WC matches, add labels
-│       ├── elo.py          # Sequential ELO rating system
-│       ├── features.py     # Leak-free feature engineering
-│       ├── splits.py       # Temporal splits + metrics
-│       ├── train.py        # Model training pipeline
-│       ├── evaluate.py     # Multi-model comparison + plots
-│       └── predict.py      # Single-match prediction CLI
-├── tests/
-│   ├── test_elo.py         # ELO correctness (20+ tests)
-│   ├── test_features.py    # Leakage prevention + form logic
-│   └── test_splits.py      # Splitting + metric computation
-├── data/                   # Downloaded data (gitignored)
-└── artifacts/
-    ├── models/             # Saved .joblib models
-    ├── reports/            # JSON metric reports
-    └── figures/            # Comparison + calibration plots
+├── src/wc_predictor/
+│   ├── api.py              # FastAPI backend (CORS, rate limiting, static serving)
+│   ├── config.py           # Paths, constants, ELO params, confederation map
+│   ├── elo.py              # Sequential ELO rating system
+│   ├── features.py         # Leak-free feature engineering (41 features)
+│   ├── splits.py           # Temporal splits + multi-class metrics
+│   ├── train.py            # Model training (sklearn Pipelines)
+│   ├── evaluate.py         # Model comparison + calibration plots
+│   ├── predict.py          # Single-match prediction + precomputation cache
+│   ├── download_data.py    # Dataset downloader + validator
+│   └── build_dataset.py    # Filter to WC matches, add labels
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx         # Main app (data fetching, state management)
+│   │   ├── components/     # PredictionForm, ResultsCard, ModelComparison, TeamFlag
+│   │   ├── utils/flags.js  # Flag URL helpers + coverage checker
+│   │   └── data/           # 261-team ISO code mapping
+│   └── vite.config.js      # Dev proxy to FastAPI
+├── tests/                  # 64 tests (ELO, features, splits, predictions)
+├── data/                   # Raw + processed match data
+├── artifacts/              # Trained models (.joblib) + evaluation reports
+├── Dockerfile              # Multi-stage build (Node + Python)
+├── render.yaml             # Render Blueprint (auto-deploy)
+└── Makefile                # Build targets
 ```
+
+## Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Temporal split, not random** | Random splits leak future data into training. Temporal splits mimic real-world deployment where you predict future matches from past data. |
+| **ELO over all matches, features over WC only** | ELO ratings need volume to converge. Computing ELO over 49k matches gives accurate ratings; features are only built for the ~9.7k WC-related matches. |
+| **Precomputed ELO cache at startup** | Replaying 40k ELO updates per request was too slow. One-time precomputation at startup reduces prediction latency from ~500ms to <10ms. |
+| **Baseline log loss is intentionally high** | `DummyClassifier` outputs [1,0,0] for every sample. `log(0)` after clipping to 1e-15 produces ~18. This is the correct worst-case reference, not a bug. |
+| **Same-origin deployment** | Serving React from FastAPI eliminates CORS complexity, avoids split-deployment issues, and provides a single URL. |
+| **Graceful XGBoost fallback** | The pipeline works without XGBoost installed (it's optional). This improves portability across environments. |
 
 ## Security
 
-- **No API keys required** -- the dataset is public domain; no secrets are used anywhere in the pipeline.
-- **No user data collected** -- the API is stateless with no cookies, sessions, or personal data stored.
-- **Rate limiting** -- `/api/predict` is limited to 30 requests/minute per IP to prevent abuse.
-- **Same-origin deployment** -- the React frontend is served from the same FastAPI origin, eliminating CORS surface area.
-- **Secret scanning** -- run `make scan-secrets` before committing to check for accidentally included credentials.
+- **No API keys or secrets** -- the dataset is public domain
+- **No user data collected** -- stateless API, no cookies or sessions
+- **Rate limiting** -- 30 requests/minute per IP on `/api/predict`
+- **Global exception handler** -- stack traces are logged server-side, never exposed to clients
+- **Same-origin CORS** -- no cross-origin surface area in production
+- **Secret scanning** -- `make scan-secrets` checks for accidentally committed credentials
 
-## Limitations and Ethical Notes
+## Limitations
 
-### Model Limitations
+- **No player-level data**: Team strength is approximated via ELO and form. Injuries, suspensions, and squad composition are not captured.
+- **Stationarity assumption**: Historical patterns may not transfer to future tournaments as football evolves.
+- **Class imbalance**: Draws are the least frequent outcome and hardest to predict.
+- **Educational purposes only**: This model should not be used for gambling or financial decisions.
 
-- **Moderate dataset size**: With qualifiers, the dataset has ~9,700 matches. Without qualifiers, only ~960 World Cup finals matches are available, which limits model capacity.
-- **No player-level data**: Team strength is approximated via aggregate ELO and recent form. Injuries, suspensions, and squad composition are not captured.
-- **Stationarity assumption**: The model assumes that patterns in historical World Cups transfer to future ones. Football evolves tactically and structurally over decades.
-- **Home advantage in World Cup**: Most WC matches are at neutral venues, but the host nation does receive a genuine boost not fully captured by the binary neutral flag.
-- **Class imbalance**: Draws are the least frequent outcome and hardest to predict. The model may underpredict draws.
+## Future Work
 
-### Ethical Notes
+1. **Player-level features** -- squad market values, average age, key player availability
+2. **Tournament structure features** -- round, group standings, goal difference
+3. **Bayesian calibration** -- replace ad-hoc draw band with properly calibrated ordinal regression
+4. **Hyperparameter tuning** -- Bayesian optimization over K-factor, form windows, and model params
+5. **Conformal prediction** -- prediction sets with guaranteed coverage instead of point probabilities
 
-- This model is for **educational and analytical purposes only**. It should not be used for gambling or financial decisions.
-- Prediction accuracy for sporting events is inherently limited. No model can reliably beat the market.
-- Historical data reflects the geopolitics of FIFA membership: some regions are underrepresented in early data.
+## License
 
-## What I Would Do Next
-
-1. **Player-level features**: Aggregate squad market values, average age, key player availability from transfermarkt or similar open sources.
-2. **Bookmaker odds as features**: Odds encode vast amounts of information (with the caveat that this is circular if the goal is to beat the market).
-3. **Tournament structure features**: Round (group/R16/QF/SF/F), group-stage standings, goal difference entering knockout rounds.
-4. **Hierarchical / mixed-effects models**: Account for team-level and confederation-level variance simultaneously.
-5. **Bayesian calibration**: Replace the ad-hoc draw band in ELO win probabilities with a properly calibrated ordinal regression.
-6. **Hyperparameter tuning**: Proper Bayesian optimisation over K-factor, form windows, model hyperparameters using time-series CV.
-7. **Conformal prediction**: Produce prediction sets with guaranteed coverage instead of point probabilities.
-8. **Venue distance features**: Compute travel distance / time-zone shift for each team to the match venue as a fatigue proxy.
+MIT
