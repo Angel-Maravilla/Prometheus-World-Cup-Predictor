@@ -52,6 +52,32 @@ def _find_best_model() -> tuple[Path, str]:
     sys.exit(1)
 
 
+def precompute_match_context(
+    all_matches: pd.DataFrame,
+) -> tuple[EloRatings, dict[str, list[pd.Series]]]:
+    """Replay ELO and team histories over all matches in a single pass.
+
+    Call once at startup and pass the results to ``compute_features_for_match``
+    via its ``precomputed_elo`` / ``precomputed_histories`` keyword arguments
+    to avoid replaying the full history on every prediction request.
+    """
+    sorted_matches = all_matches.sort_values("date").reset_index(drop=True)
+
+    elo = EloRatings()
+    team_histories: dict[str, list[pd.Series]] = defaultdict(list)
+
+    for _, row in sorted_matches.iterrows():
+        h = row["home_team"]
+        a = row["away_team"]
+        n = bool(row.get("neutral", False))
+        elo.update(h, a, int(row["home_score"]), int(row["away_score"]), neutral=n)
+        team_histories[h].append(row)
+        team_histories[a].append(row)
+
+    log.info("Precomputed ELO for %d teams over %d matches.", len(elo.ratings), len(sorted_matches))
+    return elo, dict(team_histories)
+
+
 def compute_features_for_match(
     home_team: str,
     away_team: str,
@@ -60,36 +86,48 @@ def compute_features_for_match(
     feature_cols: list[str],
     neutral: bool = True,
     return_explanation: bool = False,
+    *,
+    precomputed_elo: EloRatings | None = None,
+    precomputed_histories: dict[str, list[pd.Series]] | None = None,
 ) -> np.ndarray | tuple[np.ndarray, dict]:
     """Compute the feature vector for a hypothetical match.
 
-    Replays ELO and form computation over all international matches
-    with date < match_date, then assembles the feature vector.
+    When ``precomputed_elo`` and ``precomputed_histories`` are provided
+    (the fast path used by the API), ELO/history replay is skipped entirely.
+    Otherwise replays from scratch (the safe path for CLI/training where
+    match_date may be in the middle of the dataset).
 
     If return_explanation is True, also returns a human-readable dict
     of the key pre-match signals (for the frontend explainability card).
     """
     from wc_predictor.features import _outcome_for_team
 
-    # Filter to matches before the prediction date
-    prior = all_matches[all_matches["date"] < pd.Timestamp(match_date)].copy()
-    prior = prior.sort_values("date").reset_index(drop=True)
+    if precomputed_elo is not None and precomputed_histories is not None:
+        # Fast path: use pre-built state (safe when match_date > all data).
+        elo = precomputed_elo
+        team_histories = precomputed_histories
+        prior_count = len(all_matches)
+    else:
+        # Slow path: replay from scratch (leak-free for any match_date).
+        prior = all_matches[all_matches["date"] < pd.Timestamp(match_date)].copy()
+        prior = prior.sort_values("date").reset_index(drop=True)
 
-    if prior.empty:
-        log.error("No historical matches found before %s.", match_date)
-        sys.exit(1)
+        if prior.empty:
+            log.error("No historical matches found before %s.", match_date)
+            sys.exit(1)
 
-    # Replay ELO
-    elo = EloRatings()
-    team_histories: dict[str, list[pd.Series]] = defaultdict(list)
+        elo = EloRatings()
+        team_histories: dict[str, list[pd.Series]] = defaultdict(list)
 
-    for _, row in prior.iterrows():
-        h = row["home_team"]
-        a = row["away_team"]
-        n = bool(row.get("neutral", False))
-        elo.update(h, a, int(row["home_score"]), int(row["away_score"]), neutral=n)
-        team_histories[h].append(row)
-        team_histories[a].append(row)
+        for _, row in prior.iterrows():
+            h = row["home_team"]
+            a = row["away_team"]
+            n = bool(row.get("neutral", False))
+            elo.update(h, a, int(row["home_score"]), int(row["away_score"]), neutral=n)
+            team_histories[h].append(row)
+            team_histories[a].append(row)
+
+        prior_count = len(prior)
 
     # Assemble features
     feat: dict[str, float] = {}
@@ -192,7 +230,7 @@ def compute_features_for_match(
         "neutral_venue": bool(neutral),
         "home_confederation": CONFEDERATION_MAP.get(home_team, "UNKNOWN"),
         "away_confederation": CONFEDERATION_MAP.get(away_team, "UNKNOWN"),
-        "total_matches_in_history": len(prior),
+        "total_matches_in_history": prior_count,
     }
 
     return X, explanation

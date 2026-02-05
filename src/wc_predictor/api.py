@@ -47,7 +47,7 @@ from wc_predictor.config import (
     seed_everything,
     LABEL_NAMES,
 )
-from wc_predictor.predict import compute_features_for_match
+from wc_predictor.predict import compute_features_for_match, precompute_match_context
 
 log = get_logger(__name__)
 
@@ -104,11 +104,14 @@ _models: dict[str, object] = {}
 _schema: dict | None = None
 _dataset_hash: str = ""
 _test_match_count: int = 0
+_precomputed_elo: object | None = None
+_precomputed_histories: dict | None = None
 
 
 def _load_data() -> None:
     """Load teams, models, and schema into memory."""
     global _teams, _all_matches, _models, _schema, _dataset_hash, _test_match_count
+    global _precomputed_elo, _precomputed_histories
 
     seed_everything()
 
@@ -121,6 +124,10 @@ def _load_data() -> None:
         _teams = sorted(all_teams)
         _dataset_hash = hashlib.md5(RAW_CSV.read_bytes()).hexdigest()[:8]
         log.info("Loaded %d teams from %d matches.", len(_teams), len(_all_matches))
+
+        # Precompute ELO ratings and team histories once (avoids replaying
+        # ~40k matches on every prediction request).
+        _precomputed_elo, _precomputed_histories = precompute_match_context(_all_matches)
     else:
         log.warning("Raw data not found at %s. Run download_data first.", RAW_CSV)
 
@@ -306,6 +313,8 @@ async def predict(req: PredictionRequest, request: Request) -> PredictionRespons
     X, explanation = compute_features_for_match(
         req.home_team, req.away_team, dt, _all_matches, feature_cols,
         neutral=req.neutral, return_explanation=True,
+        precomputed_elo=_precomputed_elo,
+        precomputed_histories=_precomputed_histories,
     )
 
     proba = pipeline.predict_proba(X)[0]
