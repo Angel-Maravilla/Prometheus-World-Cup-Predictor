@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import sys
 from pathlib import Path
@@ -10,7 +11,17 @@ from pathlib import Path
 import numpy as np
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+def _resolve_project_root() -> Path:
+    """Resolve project root. Uses APP_ROOT env var in Docker (where pip install
+    puts __file__ in site-packages), falls back to source-tree layout for local dev."""
+    env_root = os.environ.get("APP_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path(__file__).resolve().parents[2]
+
+
+PROJECT_ROOT = _resolve_project_root()
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"

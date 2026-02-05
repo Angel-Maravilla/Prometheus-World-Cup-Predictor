@@ -29,6 +29,9 @@ COPY artifacts/ ./artifacts/
 # Copy built frontend from stage 1
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
+# Tell the installed package where the project root is
+ENV APP_ROOT=/app
+
 # Render injects PORT env var (default 10000)
 EXPOSE 10000
 
